@@ -6,6 +6,26 @@ import math
 import pytz
 import svgwrite
 
+params = {
+  'vscale': 30,   # Height of an hour
+  'hscale': 2.5,    # Width of a day
+  'civil-fill': 'rgb(64, 64, 255)',
+  'nautical-fill': 'rgb(0, 0, 255)',
+  'astro-fill': 'rgb(0, 0, 128)',
+  'night-fill': 'rgb(0, 0, 64)',
+  'padding-top': 10,
+  'padding-left': 10,
+  'padding-bottom': 10,
+  'padding-right': 10,
+  'start-date': datetime(2018, 1, 2),
+  'end-date': datetime(2019, 1, 1, 12),
+  'latitude': '-33.865143',
+  'longitude': '151.209900',
+  'timezone': 'Australia/Sydney',
+  'use-dst': True,
+  'filename': 'drawing.svg',
+}
+
 class SunEvents:
   date = None
   set = None
@@ -28,8 +48,7 @@ def get_set_rise(observer, body, horizon='0', use_center=False):
 
 def get_sun_events(observer, start_date, end_date):
   def localize(*dates):
-    for d in dates:
-      yield d.datetime().replace(tzinfo=pytz.utc).astimezone(tz)
+    return [d.datetime().replace(tzinfo=pytz.utc).astimezone(tz) for d in dates]
 
   sun = ephem.Sun()
   tz = start_date.tzinfo
@@ -45,7 +64,7 @@ def get_sun_events(observer, start_date, end_date):
 
     # We don't know in advance whether solar midnight will fall before or after
     # clock midnight, so calculate both and take the nearer one.
-    events.antitransit = localize(min(
+    events.antitransit, = localize(min(
         observer.previous_antitransit(sun),
         observer.next_antitransit(sun),
         key = lambda x: abs((current_date -
@@ -66,17 +85,90 @@ def get_sun_events(observer, start_date, end_date):
     current_date += one_day
   return result
 
+calc_params = {}
+
+def hours_since_midnight(date):
+  return date.hour + date.minute/60 + date.second/3600
+
+def date_to_point(date):
+  x = (date - params['start-date']).days * params['hscale'] + \
+      params['padding-left']
+  y = 0
+  if date.hour < 12:
+    y = (calc_params['latest-rise'] - hours_since_midnight(date)) \
+        * params['vscale'] + params['padding-top'] + 100
+  else:
+    y = (calc_params['latest-rise'] + 24 - hours_since_midnight(date)) \
+        * params['vscale'] + params['padding-top'] + 100
+  return x, y
+
+def get_sun_event_path(events, key1, key2):
+  path = svgwrite.path.Path()
+  path.push('M %d %d ' % (params['padding-left'], params['padding-right']))
+  for e in events:
+    path.push('%.2f %.2f ' % date_to_point(key1(e)))
+  for e in reversed(events):
+    path.push('%.2f %.2f ' % date_to_point(key2(e)))
+  path.push('z')
+  return path
+
 def main():
-  drawing = svgwrite.Drawing('drawing.svg', profile='tiny', size=(100, 100))
-  sydney = ephem.Observer()
-  sydney.lat = '-33.865143'
-  sydney.lon = '151.209900'
-  sydney_tz = pytz.timezone('Australia/Sydney')
+  observer = ephem.Observer()
+  observer.lat = params['latitude']
+  observer.lon = params['longitude']
+  timezone = pytz.timezone(params['timezone'])
+  params['start-date'] = params['start-date'].replace(tzinfo=timezone)
+  params['end-date'] = params['end-date'].replace(tzinfo=timezone)
 
-  sun_events_list = get_sun_events(sydney,
-      sydney_tz.localize(datetime(2018, 1, 2)),
-      sydney_tz.localize(datetime(2019, 1, 1, 12)))
+  sun_events = get_sun_events(observer,
+      params['start-date'], params['end-date'])
 
+  # Calculate data-dependent layout parameters
+  temp = min(sun_events, key = lambda x: x.set.replace(tzinfo=None)).set
+  calc_params['earliest-set'] = 24 - hours_since_midnight(temp)
+  temp = max(sun_events, key = lambda x: x.rise.replace(tzinfo=None)).rise
+  calc_params['latest-rise'] = hours_since_midnight(temp)
+  calc_params['canvas-width'] = \
+      (params['end-date'] - params['start-date']).days * params['hscale'] \
+      + params['padding-left'] + params['padding-right']
+  calc_params['canvas-height'] = 600
+
+  drawing = svgwrite.Drawing(params['filename'], profile='tiny',
+      size=(calc_params['canvas-width'], calc_params['canvas-height']))
+
+  # Draw civil twilight path
+  civil_twilight_path = get_sun_event_path(sun_events,
+      lambda x: x.rise, lambda x: x.set)
+  civil_twilight_path.attribs['fill'] = params['civil-fill']
+  drawing.add(civil_twilight_path)
+
+  # Draw nautical twilight path
+  nautical_twilight_path = get_sun_event_path(sun_events,
+      lambda x: x.civil_twilight_am, lambda x: x.civil_twilight_pm)
+  nautical_twilight_path.attribs['fill'] = params['nautical-fill']
+  drawing.add(nautical_twilight_path)
+
+  # Draw astronomical twilight path
+  astro_twilight_path = get_sun_event_path(sun_events,
+      lambda x: x.nautical_twilight_am, lambda x: x.nautical_twilight_pm)
+  astro_twilight_path.attribs['fill'] = params['astro-fill']
+  drawing.add(astro_twilight_path)
+
+  # Draw night path
+  night_path = get_sun_event_path(sun_events,
+      lambda x: x.astro_twilight_am, lambda x: x.astro_twilight_pm)
+  night_path.attribs['fill'] = params['night-fill']
+  drawing.add(night_path)
+
+  # Add a border for debug purposes
+  border = svgwrite.path.Path()
+  border.push('M 0 0 %d 0 %d %d 0 %d Z' % (calc_params['canvas-width'],
+    calc_params['canvas-width'], calc_params['canvas-height'],
+    calc_params['canvas-height']))
+  border.attribs['fill'] = 'none'
+  border.attribs['stroke'] = 'black'
+  border.attribs['stroke-width'] = '4'
+  drawing.add(border)
   drawing.save()
 
 if __name__ == '__main__':
