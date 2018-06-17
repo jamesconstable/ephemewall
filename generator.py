@@ -9,14 +9,15 @@ import svgwrite
 params = {
   'vscale': 30,   # Height of an hour
   'hscale': 2.5,    # Width of a day
-  'civil-fill': 'rgb(64, 64, 255)',
+  'day-fill': 'rgb(250, 250, 255)',
+  'civil-fill': 'rgb(128, 128, 255)',
   'nautical-fill': 'rgb(0, 0, 255)',
   'astro-fill': 'rgb(0, 0, 128)',
   'night-fill': 'rgb(0, 0, 64)',
-  'padding-top': 10,
-  'padding-left': 10,
-  'padding-bottom': 10,
-  'padding-right': 10,
+  'padding-top': 30,
+  'padding-left': 30,
+  'padding-bottom': 30,
+  'padding-right': 30,
   'start-date': datetime(2018, 1, 2),
   'end-date': datetime(2019, 1, 1, 12),
   'latitude': '-33.865143',
@@ -91,20 +92,18 @@ def hours_since_midnight(date):
   return date.hour + date.minute/60 + date.second/3600
 
 def date_to_point(date):
-  x = (date - params['start-date']).days * params['hscale'] + \
-      params['padding-left']
-  y = 0
-  if date.hour < 12:
-    y = (calc_params['latest-rise'] - hours_since_midnight(date)) \
-        * params['vscale'] + params['padding-top'] + 100
-  else:
-    y = (calc_params['latest-rise'] + 24 - hours_since_midnight(date)) \
-        * params['vscale'] + params['padding-top'] + 100
+  day_diff = (date - params['start-date']).days
+  time_diff = calc_params['latest-rise'] - hours_since_midnight(date)
+  if date.hour >= 12:
+    day_diff += 1
+    time_diff += 24
+  x = day_diff * params['hscale'] + params['padding-left']
+  y = time_diff * params['vscale'] + params['padding-top']
   return x, y
 
 def get_sun_event_path(events, key1, key2):
   path = svgwrite.path.Path()
-  path.push('M %d %d ' % (params['padding-left'], params['padding-right']))
+  path.push('M ')
   for e in events:
     path.push('%.2f %.2f ' % date_to_point(key1(e)))
   for e in reversed(events):
@@ -124,17 +123,29 @@ def main():
       params['start-date'], params['end-date'])
 
   # Calculate data-dependent layout parameters
-  temp = min(sun_events, key = lambda x: x.set.replace(tzinfo=None)).set
+  temp = min(sun_events, key = lambda x: x.set.time()).set
   calc_params['earliest-set'] = 24 - hours_since_midnight(temp)
-  temp = max(sun_events, key = lambda x: x.rise.replace(tzinfo=None)).rise
+  temp = max(sun_events, key = lambda x: x.rise.time()).rise
   calc_params['latest-rise'] = hours_since_midnight(temp)
   calc_params['canvas-width'] = \
       (params['end-date'] - params['start-date']).days * params['hscale'] \
       + params['padding-left'] + params['padding-right']
-  calc_params['canvas-height'] = 600
+  calc_params['canvas-height'] = (calc_params['earliest-set'] 
+      + calc_params['latest-rise']) * params['vscale'] \
+      + params['padding-top'] + params['padding-bottom']
 
   drawing = svgwrite.Drawing(params['filename'], profile='tiny',
       size=(calc_params['canvas-width'], calc_params['canvas-height']))
+
+  # Add a border and background for debug purposes
+  border = svgwrite.path.Path()
+  border.push('M 0 0 %d 0 %d %d 0 %d Z' % (calc_params['canvas-width'],
+    calc_params['canvas-width'], calc_params['canvas-height'],
+    calc_params['canvas-height']))
+  border.attribs['fill'] = params['day-fill']
+  border.attribs['stroke'] = 'black'
+  border.attribs['stroke-width'] = '4'
+  drawing.add(border)
 
   # Draw civil twilight path
   civil_twilight_path = get_sun_event_path(sun_events,
@@ -160,15 +171,6 @@ def main():
   night_path.attribs['fill'] = params['night-fill']
   drawing.add(night_path)
 
-  # Add a border for debug purposes
-  border = svgwrite.path.Path()
-  border.push('M 0 0 %d 0 %d %d 0 %d Z' % (calc_params['canvas-width'],
-    calc_params['canvas-width'], calc_params['canvas-height'],
-    calc_params['canvas-height']))
-  border.attribs['fill'] = 'none'
-  border.attribs['stroke'] = 'black'
-  border.attribs['stroke-width'] = '4'
-  drawing.add(border)
   drawing.save()
 
 if __name__ == '__main__':
